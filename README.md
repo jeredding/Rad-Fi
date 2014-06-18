@@ -7,3 +7,4 @@ Simple digital input, PWM output desinged for use with a CMOS square wave oscill
 
 Schematics, build instructions, and more info on the device and workshop series <a href="http://bleeplabs.com/rad-fi/">here</a>.
 
+CC BY-SA 3.0
