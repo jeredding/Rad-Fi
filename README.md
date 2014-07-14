@@ -1,9 +1,7 @@
-Rad-Fi-001
+The Rad Fi delay
 ==========
 
-The Rad Fi 001 delay
-
-Simple digital input, PWM output desinged for use with a CMOS square wave oscillator designed for great feedback textures and loops.
+Simple Analog input, PWM output desinged for use with a CMOS square wave oscillator. Great feedback textures and glitchy loops.
 
 Schematics, build instructions, and more info on the device and workshop series <a href="http://bleeplabs.com/workshops/">here</a>.
 
