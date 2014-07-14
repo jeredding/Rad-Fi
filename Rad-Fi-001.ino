@@ -1,3 +1,10 @@
+/*
+Rad-Fi delay by Dr. Bleep
+bleeplabs.com
+
+*/
+
+
 #include <TimerOne.h> // This library is necessary to creat the audio interupt
 
 // the size of our delay buffer. the atmega328 only has 2k of ram. 
