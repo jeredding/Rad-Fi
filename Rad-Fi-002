@@ -1,0 +1,369 @@
+/*
+Rad-Fi delay plus by Dr. Bleep
+bleeplabs.com
+
+Designed for the Bleep Labs summer workshop series at Switched On
+http://bleeplabs.com/workshops/
+
+*/
+#include <TimerOne.h>// This library is necessary to creat the audio interupt
+
+#define DLY_BUF_LEN 1030
+
+// the size of our delay buffer. the atmega328 only has 2k of ram. 
+// We could probably use a little more than half but this is safe and easy to calculate
+
+
+byte dly_buffer[DLY_BUF_LEN]={};
+
+
+
+unsigned long accumulator[3]={};
+unsigned long increment[3]={};
+uint16_t out[3]={};
+uint16_t freq[3]={};
+uint16_t waveindex[3]={};
+
+unsigned long d,t,prev,prev2;
+byte tickLED,tick2,pot_tick;
+int dds_rate=50;
+long dds_tune;
+byte dly_tick,fast_pot_tick,slow_sample;
+uint16_t write_head,read_head,lerp_dly,fm,am,samp_c,freq_in,freq_in_s;
+int dly_filter,feedback,fb_tmp,fb_tmp_inv,output,dly_input,dly_time,rn;
+int in2;
+byte f_mode;
+int seq_step;
+long seq_rate,seq_step_len;
+int ledState = LOW;
+int seq_stop,p1,dly_buf_in,p2,p2_inv;
+int dly_mix,dly_mix_2,fpot1,mode_p,seq_rate_p;
+byte mode,seq_on,seq_amp_out;
+int amp_lerp,fb_amt,fb_amt_inv; 
+byte crush_amt;
+int  dly_led_c;
+int blink_inv;
+byte tick4;
+int previnput[2]={};
+int in1,in0,in3;
+byte AM_enable;
+int dig_in,out_mix;
+int mult_mix,lerp_tick,amin;
+int dout;
+byte fb_mode,freeze,lofi_tick,lofi,reverse;
+int blinkc,blinklatch,blc;
+
+void setup(void)
+{
+
+  pinMode(19, OUTPUT);  
+  pinMode(12, OUTPUT);
+  pinMode(5, OUTPUT);
+  pinMode(6, OUTPUT);
+
+  pinMode(2, INPUT);
+  digitalWrite(2, HIGH);
+
+  pinMode(4, INPUT);   
+  digitalWrite(4,HIGH);
+
+  pinMode(3, INPUT);
+  digitalWrite(3,HIGH);
+
+//delay rate select with binary value at 3 and 4
+// both low = 0 = full speed 13.3 kHz
+// 4 low 3 high(unattached) = 1 = 6.66 kHz  // recomended
+// 4 high 3 low = 2 = 3.33 kHz  // it's pretty much garbage at thig point but it's fun for feedback noise! 
+// both high = 3 = 1.66 kHz 
+
+
+
+  pinMode(7, INPUT);
+  digitalWrite(7,HIGH);
+
+
+  pinMode(8, INPUT);
+  digitalWrite(8,HIGH);
+
+  TCCR0B = TCCR0B & 0b11111000 | 0x01 ; //timer 0 62500Hz
+
+  // PWM is a way of mimicking analog signals with digital pins. 
+  // We need to change the frequecy so our output sounds better.
+  //
+  // http://playground.arduino.cc/Main/TimerPWMCheatsheet
+
+  const unsigned char PS_16 = (1 << ADPS2);
+  const unsigned char PS_32 = (1 << ADPS2) | (1 << ADPS0);
+  const unsigned char PS_64 = (1 << ADPS2) | (1 << ADPS1);
+  const unsigned char PS_128 = (1 << ADPS2) | (1 << ADPS1) | (1 << ADPS0);
+
+  ADCSRA &= ~PS_128;
+  ADCSRA |=PS_16;
+
+  
+
+  Audio_Interupt();
+
+  Timer1.initialize(75);  //75 microseconds = 13.3 kHz
+
+  Timer1.attachInterrupt(Audio_Interupt); 
+
+  Serial.begin(9600);
+}
+
+
+
+
+void Audio_Interupt()
+{
+
+  PORTB |= _BV(PORTB5);  //this allows us to attach a scope to pin 13 and see the actual rate the interut is going.
+
+
+  pot_tick=!pot_tick; // only read the audio input every time. 
+
+  if(pot_tick==1){
+    in0 =analogRead(A0);
+
+  }
+
+  if(pot_tick==0){
+    in1 =analogRead(A1)>>2;  
+
+  }
+
+  amin =(analogRead(A3)>>1); // audio in
+  amin-=255; // makes the input range -255 to 255. 
+
+
+  if (amin<-255) {   // hard clipping
+    amin=-126;
+}
+
+if (amin>255) {
+  amin=126;
+}
+
+byte ttt=feedback_delay(amin);  // send the clipped and shifted audio to the delay and get the output
+analogWrite(5, ttt); 
+
+
+// though you can't rell too much with a short, lo-fi delay, the delay time needs to move around smoothly. 
+// this code does a linear interpolation of the delay time value so that it chases the actual pot value around rather than immediatley going to it and making noise we don't want.
+
+lerp_tick++;  
+if (lerp_tick>6){
+ byte dly_step=1;
+
+ if(lerp_dly < dly_time)  
+ lerp_dly +=dly_step;
+ if(lerp_dly > dly_time)
+ lerp_dly -= dly_step;
+
+ lerp_tick=0;
+}
+
+PORTB &= ~_BV(PORTB5);
+
+
+
+}
+
+
+void loop(void){
+
+  freeze = (digitalRead(8)); // when this pin is low the delay buffer takes no new input. output is just what's in the buffer
+  reverse = (digitalRead(7)); // reverses the playback of the delay buffer
+
+dly_time=(readchange(0,in0))+1;    // update the delay time value. readchange info bleow
+
+if (in1<126){   //in1 is the feedback pot/ here we setup 3 diffent zones so the knob acts differn't when it's between these values.
+  fb_tmp=(in1<<1);    // update the feedback value.
+  fb_tmp_inv=(fb_tmp-255)*-1;  //calculates an inverted value for feedback amount
+
+}
+
+if (in1>126 && in1<146){
+  fb_tmp=(254);    
+  fb_tmp_inv=1;  
+
+}
+
+if (in1>=146){
+   fb_tmp=((in1-128)<<3);    
+  fb_tmp_inv=(fb_tmp);  
+
+}
+
+
+blink_inv=((dly_time-DLY_BUF_LEN)*-1);
+blinkc++;
+if (blinkc>blink_inv){
+    tick4=!tick4;
+    digitalWrite(19,tick4);   // blinks with the delay rate
+    blinkc=0;
+}
+
+byte bc3 =! digitalRead(3);  //delay sample rate select 
+byte bc4 =! digitalRead(4);
+crush_amt=(bc3<<1)|bc4;
+
+   Serial.println(prev|dly_time);
+
+
+  if ((millis()-prev)>1000){
+    prev=millis();
+   // Serial.println();
+ }
+
+}
+
+byte feedback_delay(int dly_input){
+
+  // The delay works by writing and read values from a large bank of values.
+  // Both "heads" are constatly moving through the bank value by value and wrapping around when the reach the top.
+  // The length of the delay is determined by how far away the read head is from the write head.
+//
+//  For exampe lets say the wite head is at 100 and the length is 500. That means that the write head will take the input value and 
+//  record it at the 100th position in the buffer, dly_buffer[100]. The read head would be at 100-500= -400 = 1030(the size of the bank)-400 = 630.
+//  The output signal is added to the input signal with feedback. This is waht give the real delay sound. Other wise it would just be BEEP.....BEEP.
+//  Add it back in gives the long trailing sound that diminishes in voulme. BEEPPPPP...BEEPPP....BEEP...Beep...be....b......
+//  Adding a lot of feedback and you get...uuh.. feedback!
+  
+  
+  byte dly_out;
+  int fb_in,in_in,in_mix;
+  int out_temp1;
+
+  dly_tick++;
+  if (dly_tick>crush_amt){  // delay sample rate 
+    write_head++;  
+    dly_tick=0;
+
+  }
+  
+  if (write_head > (DLY_BUF_LEN-2)){
+    write_head=0;
+  }
+
+
+  read_head = (write_head + lerp_dly); // read head distance from write head is delay length
+
+
+  if (read_head > (DLY_BUF_LEN-2)){
+    read_head-=(DLY_BUF_LEN-2);
+  }
+if (reverse==1){ //OFF
+  read_head = (write_head + lerp_dly);
+
+
+  if (read_head > (DLY_BUF_LEN-2)){
+    read_head-=(DLY_BUF_LEN-2);
+  }
+}
+
+
+
+if (reverse==0){
+  int inv_write_head=(write_head-DLY_BUF_LEN-2)*-1;
+  read_head = (inv_write_head+lerp_dly);
+
+  if (read_head > (DLY_BUF_LEN-2)){
+    read_head-=(DLY_BUF_LEN-2);
+  }
+
+  if (read_head <0){
+    read_head+=(DLY_BUF_LEN-2);
+  }
+}
+
+
+
+if (freeze==1){ // freeze off
+
+  dly_out = dly_buffer[read_head];
+
+// feedback. As fb_tmp goes up, fb_tmp_inv goes down. once you get over half of the pot things getIUHUIH*U(*JNB%%^T*YyughyuvYGZCZXX
+// we subtract 127 to combine the input and feedback values.
+// Audio is push and pull from a central point but haing it be 0-255 (a byte) means that it rests at 127.
+// when you add two numbers together like this you looks that middle. So we make the values -127 to 127, combine them, half it and add 127 to make it 0-255 again.
+
+  fb_in = ((feedback-127)*fb_tmp)>>8;
+  in_in = ((dly_input)*fb_tmp_inv)>>8;
+
+
+  dly_mix_2=(((dly_input)*90)>>8);
+  dly_mix=((dly_out-127)*(255-90))>>8;
+  in_mix =  (fb_in+in_in)+127;
+
+  if (in_mix>=253){
+    in_mix=253;
+  }
+
+  if (in_mix<=2){
+    in_mix=2;
+
+  }
+
+
+  dly_buffer[write_head] = in_mix;
+  out_temp1 = dly_mix_2+dly_mix+127;
+
+
+
+}
+
+
+if (freeze==0){
+  int lerp_dly_inv=(lerp_dly-DLY_BUF_LEN-2)*-1;
+
+
+read_head=write_head % lerp_dly_inv;
+
+
+  out_temp1 = (dly_buffer[read_head])>>1;
+ //out_temp1 = 0;
+
+}
+
+feedback = out_temp1;
+
+return out_temp1;
+}
+
+
+int readchange(byte n, int input){
+
+  /// this code is used to smooth out the pot values. it only changes the value if the pot moves more than "diff"
+// if the pots have noisey reading this intoduces the wrong kind of clikcs and pops in our audio out. 
+
+
+  int diff=8;
+  //int input = analogRead(n);
+  int output;
+  if ((input>(previnput[n]+diff))||(input<(previnput[n]-diff))){
+
+    output= input;
+    previnput[n]=input;
+    //Serial.println("C");
+  }
+
+
+  else{
+    output=  previnput[n];
+    ///Serial.println("-");
+  }
+
+  if (input>1020){
+
+    output=1024;
+  }
+
+  if (input<3){
+
+    output=0;
+  }
+
+  return output;
+}
+
